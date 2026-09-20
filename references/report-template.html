@@ -1,0 +1,281 @@
+<!--
+  Plantilla de reporte para la skill jelou-phone-migration.
+  Cómo usarla: copiar este archivo, reemplazar cada {{TOKEN}} con datos reales
+  de la company auditada, añadir/quitar <tr> en las tablas según los hallazgos
+  reales, y publicar con el Artifact tool (favicon sugerido: "📱").
+  Nunca dejar un {{TOKEN}} sin reemplazar en la versión publicada.
+  Nunca poner un número de teléfono real de un cliente — solo el sintético de
+  prueba o un placeholder tipo 593900000000.
+-->
+<title>Auditoría de Teléfono — {{COMPANY_NAME}}</title>
+<style>
+  :root {
+    --bg: #f4f6f7;
+    --surface: #ffffff;
+    --surface-2: #eef2f3;
+    --border: #dbe2e4;
+    --text: #16232a;
+    --text-muted: #5b6b71;
+    --accent: #00838f;
+    --accent-ink: #ffffff;
+    --ok-bg: #e3f5ec; --ok-ink: #146c43; --ok-border: #a9dfc4;
+    --warn-bg: #fef3e0; --warn-ink: #8a5a00; --warn-border: #f3d38c;
+    --crit-bg: #fdeaea; --crit-ink: #a3231f; --crit-border: #f3b8b6;
+    --info-bg: #e8f1fb; --info-ink: #1c5aa3; --info-border: #b9d6f2;
+    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --sans: "IBM Plex Sans", -apple-system, "Segoe UI", sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #10171a;
+      --surface: #172024;
+      --surface-2: #1d282c;
+      --border: #2a373c;
+      --text: #e7eef0;
+      --text-muted: #93a5ab;
+      --accent: #2fd0dd;
+      --accent-ink: #05282c;
+      --ok-bg: #123425; --ok-ink: #7fe3ac; --ok-border: #1f5c3d;
+      --warn-bg: #3a2c0d; --warn-ink: #f3c46a; --warn-border: #634a13;
+      --crit-bg: #3a1616; --crit-ink: #f5a19d; --crit-border: #632423;
+      --info-bg: #12293d; --info-ink: #8fc0f0; --info-border: #1f4a6b;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #10171a; --surface: #172024; --surface-2: #1d282c; --border: #2a373c;
+    --text: #e7eef0; --text-muted: #93a5ab; --accent: #2fd0dd; --accent-ink: #05282c;
+    --ok-bg: #123425; --ok-ink: #7fe3ac; --ok-border: #1f5c3d;
+    --warn-bg: #3a2c0d; --warn-ink: #f3c46a; --warn-border: #634a13;
+    --crit-bg: #3a1616; --crit-ink: #f5a19d; --crit-border: #632423;
+    --info-bg: #12293d; --info-ink: #8fc0f0; --info-border: #1f4a6b;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    margin: 0;
+    padding-block: 24px 64px;
+    line-height: 1.5;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding-inline: 20px; display: flex; flex-direction: column; gap: 28px; }
+
+  header.top {
+    display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 12px;
+    border-bottom: 1px solid var(--border); padding-bottom: 18px;
+  }
+  header.top h1 { font-size: 1.6rem; margin: 0; text-wrap: balance; }
+  header.top .meta { color: var(--text-muted); font-size: 0.9rem; }
+  .badges { display: flex; flex-wrap: wrap; gap: 8px; }
+  .badge {
+    font-family: var(--mono); font-size: 0.78rem; letter-spacing: 0.02em;
+    padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border);
+    background: var(--surface-2); color: var(--text-muted);
+  }
+  .badge.ok { background: var(--ok-bg); color: var(--ok-ink); border-color: var(--ok-border); }
+  .badge.warn { background: var(--warn-bg); color: var(--warn-ink); border-color: var(--warn-border); }
+  .badge.crit { background: var(--crit-bg); color: var(--crit-ink); border-color: var(--crit-border); }
+  .badge.info { background: var(--info-bg); color: var(--info-ink); border-color: var(--info-border); }
+
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .tile {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px; display: flex; flex-direction: column; gap: 4px;
+  }
+  .tile .num { font-family: var(--mono); font-size: 1.7rem; font-variant-numeric: tabular-nums; }
+  .tile .label { color: var(--text-muted); font-size: 0.82rem; }
+  .tile.crit .num { color: var(--crit-ink); }
+  .tile.warn .num { color: var(--warn-ink); }
+  .tile.ok .num { color: var(--ok-ink); }
+
+  section { display: flex; flex-direction: column; gap: 12px; }
+  section h2 {
+    font-size: 1.05rem; margin: 0; padding-bottom: 8px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 8px;
+  }
+  section h2 .eyebrow { font-family: var(--mono); font-size: 0.75rem; color: var(--text-muted); font-weight: 400; }
+  section p { margin: 0; color: var(--text); }
+  section p.lead { color: var(--text-muted); }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; }
+
+  code, .mono { font-family: var(--mono); font-size: 0.88em; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  .table-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  thead th { background: var(--surface-2); color: var(--text-muted); font-weight: 600; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--surface-2); }
+
+  .pill { display: inline-block; font-size: 0.76rem; font-weight: 600; padding: 2px 9px; border-radius: 999px; border: 1px solid; white-space: nowrap; }
+  .pill.migrate { background: var(--warn-bg); color: var(--warn-ink); border-color: var(--warn-border); }
+  .pill.donottouch { background: var(--ok-bg); color: var(--ok-ink); border-color: var(--ok-border); }
+  .pill.ambiguous { background: var(--crit-bg); color: var(--crit-ink); border-color: var(--crit-border); }
+  .pill.high { background: var(--crit-bg); color: var(--crit-ink); border-color: var(--crit-border); }
+  .pill.medium { background: var(--warn-bg); color: var(--warn-ink); border-color: var(--warn-border); }
+  .pill.low { background: var(--info-bg); color: var(--info-ink); border-color: var(--info-border); }
+
+  ul.plan, ul.warnings { margin: 0; padding-left: 1.2em; display: flex; flex-direction: column; gap: 8px; }
+  ul.warnings li::marker { content: "⚠ "; }
+
+  .decision { border: 1px solid var(--accent); border-radius: 10px; padding: 18px 20px; background: var(--surface); }
+  .decision h2 { border: none; padding: 0; }
+  .decision ol { margin: 10px 0 0; padding-left: 1.3em; display: flex; flex-direction: column; gap: 10px; }
+  .decision .option-title { font-weight: 600; }
+  .decision .option-body { color: var(--text-muted); font-size: 0.92rem; }
+
+  footer.note { color: var(--text-muted); font-size: 0.8rem; border-top: 1px solid var(--border); padding-top: 14px; }
+
+  @media (max-width: 560px) {
+    header.top { flex-direction: column; align-items: flex-start; }
+    .tiles { grid-template-columns: repeat(2, 1fr); }
+  }
+</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<div class="wrap">
+
+  <header class="top">
+    <div>
+      <h1>Auditoría de Teléfono — {{COMPANY_NAME}}</h1>
+      <div class="meta">Proyecto <span class="mono">{{PROJECT_NAME}}</span> · {{AS_OF_DATE}}</div>
+    </div>
+    <div class="badges">
+      <span class="badge {{PROVIDER_BADGE_CLASS}}">provider: {{PROVIDER}}</span>
+      <span class="badge {{ROUTING_BADGE_CLASS}}">enrutamiento: {{ROUTING_MODEL_LABEL}}</span>
+      <span class="badge info">botón nativo: {{NATIVE_BUTTON_YESNO}}</span>
+    </div>
+  </header>
+
+  <section class="tiles">
+    <div class="tile"><span class="num">{{COUNT_FILES}}</span><span class="label">archivos auditados</span></div>
+    <div class="tile warn"><span class="num">{{COUNT_MIGRATE}}</span><span class="label">nodos a migrar</span></div>
+    <div class="tile ok"><span class="num">{{COUNT_DONOTTOUCH}}</span><span class="label">correctos, no tocar</span></div>
+    <div class="tile crit"><span class="num">{{COUNT_AMBIGUOUS}}</span><span class="label">ambiguos, revisar</span></div>
+    <div class="tile"><span class="num">{{COUNT_TOOLS}}</span><span class="label">tools/APIs revisadas</span></div>
+  </section>
+
+  <section>
+    <h2>Arquitectura <span class="eyebrow">jelou-graph + jelou workflow evaluate</span></h2>
+    <p class="lead">{{ARCHITECTURE_SUMMARY_PARAGRAPH}}</p>
+    <div class="card">
+      <p><strong>Evidencia de enrutamiento:</strong></p>
+      <p class="mono" style="white-space:pre-wrap;">{{ROUTING_EVIDENCE_RAW}}</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Hallazgos <span class="eyebrow">user.id / user.phone</span></h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Workflow</th><th>Nodo</th><th>Tipo</th><th>Clasificación</th><th>Motivo</th></tr>
+        </thead>
+        <tbody>
+          <!-- EJEMPLO — reemplazar por filas reales, una por hallazgo -->
+          <tr>
+            <td class="mono">{{workflow-ejemplo.whatsapp.json}}</td>
+            <td class="mono">{{nodeId}}</td>
+            <td>DATUM</td>
+            <td><span class="pill migrate">migrar</span></td>
+            <td>Busca al cliente por <code>{{$user.id}}</code> en el campo <code>telefono</code>.</td>
+          </tr>
+          <tr>
+            <td class="mono">{{workflow-ejemplo-2.whatsapp.json}}</td>
+            <td class="mono">{{nodeId}}</td>
+            <td>HTTP</td>
+            <td><span class="pill donottouch">no tocar</span></td>
+            <td>URL interna <code>api.jelou.ai/.../users/{{$user.id}}/...</code> — identidad de plataforma, no teléfono.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Tools &amp; APIs <span class="eyebrow">revisión de payload completo</span></h2>
+    <p class="lead">{{TOOL_COUNT_TOTAL}} tools revisadas — {{TOOL_COUNT_STANDALONE}} en nodos TOOL, {{TOOL_COUNT_AI_AGENT}} conectadas a agentes IA.</p>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Tool / nodo</th><th>Destino real</th><th>Prioridad</th><th>Por qué</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono">{{tool-ejemplo}}</td>
+            <td>{{destino-real, ej. transportadora / CRM / alerta interna}}</td>
+            <td><span class="pill high">alta</span></td>
+            <td>{{explicación breve del riesgo real}}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Omitir esta sección por completo si Fase 6.5 no encontró hallazgos tool-internal -->
+  <section>
+    <h2>Tools con lógica interna afectada <span class="eyebrow">requiere autorización aparte — Fase 12.5</span></h2>
+    <p class="lead">Esto no se aplica junto con el resto del plan. Se pregunta por separado, después de aplicar (o descartar) los cambios de workflow.</p>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Tool</th><th>Su propio workflow</th><th>Qué está mal adentro</th><th>Llamadores (todo el proyecto)</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono">{{tool-interna-ejemplo}}</td>
+            <td class="mono">{{workflowId-de-la-tool}}</td>
+            <td>{{descripción del hallazgo dentro de la tool}}</td>
+            <td>{{lista de nodos TOOL y conexiones de agentes IA que la llaman}}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Estado existente</h2>
+    <p>{{EXISTING_GUARD_OR_BROKEN_PATTERN_SUMMARY}}</p>
+  </section>
+
+  <section>
+    <h2>Verificación en vivo <span class="eyebrow">jelou test, usuario sintético</span></h2>
+    <div class="card">
+      <p class="mono" style="white-space:pre-wrap;">{{RUNTIME_VERIFICATION_RESULT}}</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Plan propuesto</h2>
+    <ul class="plan">
+      <li>{{plan-item-1}}</li>
+      <li>{{plan-item-2}}</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Advertencias</h2>
+    <ul class="warnings">
+      <li>{{warning-1}}</li>
+    </ul>
+  </section>
+
+  <section class="decision">
+    <h2>Decisión</h2>
+    <p class="lead">Responde en el chat con una de estas opciones (o una combinación):</p>
+    <ol>
+      <li><span class="option-title">Aplicar el plan tal cual</span><br><span class="option-body">Guard + migración de nodos en los workflows. Todo queda en el draft del proyecto — nada se publica.</span></li>
+      <li><span class="option-title">Aplicar con ajustes</span><br><span class="option-body">Indica qué cambiar antes de tocar el draft.</span></li>
+      <li><span class="option-title">No aplicar todavía</span><br><span class="option-body">El reporte queda como referencia para revisar después.</span></li>
+    </ol>
+    <!-- Incluir este párrafo solo si existe la sección "Tools con lógica interna afectada" -->
+    <p class="lead" style="margin-top:6px;">Si hay tools con lógica interna afectada, esa corrección se pregunta aparte — <strong>después</strong> de resolver lo anterior, nunca junto con esta decisión.</p>
+  </section>
+
+  <footer class="note">Generado por la skill <span class="mono">jelou-phone-migration</span>. No contiene números de teléfono reales de clientes.</footer>
+
+</div>
