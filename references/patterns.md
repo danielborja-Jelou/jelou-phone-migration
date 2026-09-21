@@ -1,4 +1,4 @@
-# Known patterns — evidence from four real migrations
+# Known patterns — evidence from real migrations
 
 Every rule here was confirmed empirically (via `jelou test` traces or `jelou workflow validate`), not inferred. Company names in parentheses are where it was first confirmed; treat the pattern as platform-wide unless noted otherwise.
 
@@ -15,11 +15,13 @@ user\.get\(\\?"phone\\?"\)
 
 Note the JSON-escaping: a pulled workflow file has literal `\"` inside string values, so `$user.get("phone")` appears in the raw bytes as `$user.get(\"phone\")`. Grep for both the escaped and unescaped forms, or normalize by loading the JSON and re-serializing before searching node-by-node.
 
-## `$user.get("phone")` throws inside CODE nodes — confirmed in 2 companies, different providers
+## `$user.get("phone")` inside CODE nodes — direct swap for an existing `$user.get("id")` call works (corrected, Company G)
 
-Calling `$user.get("phone")` inside a Jelou `CODE` node's JS sandbox throws `Error: Key phone not found.` — it does **not** return `undefined` or `""`. Confirmed via `jelou test trace --include-raw` in both Company A (`gupshup_capi`) and Company B (`gupshup` classic), same exact error message, so this is a platform sandbox limitation, not provider-specific. Only `$user.get("id")`, `$user.get("botId")`, `$user.data`, etc. are valid keys there.
+Earlier evidence (Company A, `gupshup_capi`; Company B, `gupshup` classic) recorded `$user.get("phone")` throwing `Error: Key phone not found.` inside a `CODE` node's JS sandbox, and prescribed a `MEMORY` + `$memory.get()` workaround plus a fresh runtime probe per company to re-confirm it.
 
-**Consequence**: never write `$user.get("phone")` in a CODE node. To get the resolved phone into CODE's reach:
+**Correction (Company G):** when a CODE node already calls `$user.get("id")` and that hit is classified `migrate`, replace the literal call with `$user.get("phone")` directly — it works. No `MEMORY`/`$memory.get()` indirection is needed, and no dedicated Phase 8-style runtime probe is needed to re-verify this specific swap; treat it as the standing migration move for this shape.
+
+If you ever hit a CODE node calling `$user.get("phone")` from scratch (not replacing an existing `$user.get("id")` call) and it throws `Error: Key phone not found.`, fall back to the old workaround:
 1. A `MEMORY` node first, with a template field: `"variables": {"some_key": "{{$user.phone}}"}` — this form works fine, safely resolves to `""` when the contact has no phone (confirmed via `jelou test trace`), never throws.
 2. Read it back inside CODE via `$memory.get("some_key")`.
 3. To persist a result for downstream nodes from CODE, use `$memory.set("your_key", value)` — never `$output.set(...)`.
@@ -53,6 +55,15 @@ A blocking `contact_info_request` needs `default` + `expire` wired (`jelou workf
 **Confirmed 2026-09-20, Company E:** the natural-looking alternative — wire `expire` back to the `contact_info_request` node itself, a self-loop — looks valid to `jelou workflow validate` (offline) but the live server rejects the edge-creation call with `Insufficient scope / FORBIDDEN`. Self-referencing edges (a node's own id as both `sourceId` and `targetId`) are not a supported shape on this platform, at least not through this API path — don't design around them, for this guard or anything else that might seem to want a "retry itself" edge.
 
 **Current standing pattern:** leave `expire` unwired on the `contact_info_request` node (same outcome as Company A's manual fix) — `jelou workflow validate` reports one `edge_error_missing_expire_branch_required_when_contact_info_request_is_blocking`, note it as a known accepted gap in the report, and push anyway; it has gone through in practice. For the `INPUT`-fallback variant's retry logic (invalid digits, or its own `expire`/`exit`), route back to the upstream `CONDITIONAL` node instead of the `INPUT` node itself — a two-node cycle is fine, only a literal self-loop is rejected. See Phase 9 in `SKILL.md` for the canonical shape this produces.
+
+## The guard must be its own workflow — never nodes inlined into the caller (Company G)
+
+Confirmed live mistake, Company G: when applying the fix, the guard's `START`/`CONDITIONAL`/`CHANNEL_MESSAGE`/`END` nodes were created directly inside the `inicio` (entry) workflow instead of as their own separate workflow. This is wrong regardless of routing bucket:
+- It pollutes the entry workflow's own graph with nodes that belong to a reusable sub-flow.
+- In the real-AI-routing bucket, every matching workflow needs the same guard — inlining it means duplicating the same nodes into every workflow instead of adding one `SKILL` node per workflow that all call the same guard.
+- A future Phase 7 existing-guard detection pass looks for a distinct workflow with guard-shaped nodes; nodes buried inside an unrelated entry workflow are much harder to recognize and reuse.
+
+**Standing rule:** the guard is always authored as its own standalone, `SKILL`-callable workflow (its own `START`, ending in an `END` that selects the single `resuelto` output). Every caller — the true entry in the no-real-routing bucket, or each matching workflow in the real-AI-routing bucket — gets exactly one `SKILL` node wired right after its own `START` that calls the guard workflow, never the guard's raw nodes copy-pasted or hand-built in place.
 
 ## Distinguishing "platform-identity field" from "business phone field"
 

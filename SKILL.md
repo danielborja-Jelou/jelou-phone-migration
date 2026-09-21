@@ -5,7 +5,7 @@ description: "Audits a Jelou company's bot(s) for unsafe use of $user.id as the 
 
 # Jelou Phone Migration
 
-Distilled from hands-on migrations across real companies (referred to below as Company A through Company F — names generalized). Every rule below exists because it was learned the hard way on one of those — see `references/patterns.md` for the evidence behind each one.
+Distilled from hands-on migrations across real companies (referred to below as Company A through Company G — names generalized). Every rule below exists because it was learned the hard way on one of those — see `references/patterns.md` for the evidence behind each one.
 
 ## What this skill does, in one sentence
 
@@ -50,6 +50,7 @@ If the phrasing is ambiguous about which is company vs. project, ask once rather
 Run `jelou graph summary --agent`. From `architecture.entryCandidates` and the full `jelou workflow list --project-id <id> --agent`, determine:
 - Which workflow(s) have `default: true` (there should be exactly one).
 - Whether any other workflow has a company-built "router" pattern (an `AI_TASK` classifying intent feeding a `CONDITIONAL`/`CODE` that dispatches via `SKILL` nodes — seen in Company C's "Router principal" and Company D's "2. Router IA principal"). This is **not** the same as Jelou's native AI router — it's an internal re-dispatch hub, note it as such but don't treat it as a second entry point on its own.
+- **Which workflows have nothing connected to their `START` node.** For every workflow pulled in Phase 2, check its `START` node's outgoing edges directly in the JSON. A `START` with **zero** outgoing edges means the workflow is a stub — an abandoned draft, an unfinished duplicate, a leftover test — that cannot run for any real user, since nothing executes after `START`. **Exclude every such workflow from Phase 5 onward** (text audit, tool audit, guard placement) — a `user.id` reference sitting in dead code is not a real risk and would only pad the findings with noise. **Never exclude silently**: keep the list (name + id) and put it in the report's Architecture section (Phase 10) so the person can confirm none of them were actually meant to be live. If Phase 4's `jelou workflow evaluate` ever comes back matching one of these as the eligible workflow for a real first message, that's a contradiction — stop and re-verify rather than trusting the exclusion blindly.
 
 Remember `jelou-graph` only models structural relations (`CALLS`/`FLOWS_TO`/`CONTAINS`/`ROUTES_TO`/`READS`/`WRITES`) — it will not find text mentions of `user.id`/`user.phone` inside prompts or config strings. That's Phase 5, done separately, always.
 
@@ -64,7 +65,7 @@ Remember `jelou-graph` only models structural relations (`CALLS`/`FLOWS_TO`/`CON
 
 ## Phase 5 — Text audit for `user.id` / `user.phone`
 
-Do NOT rely on `jelou graph` for this (see Phase 3 note). Pull every workflow JSON already on disk from Phase 2 and search directly, across **every** node type including `AI_TASK`/`AI_LOGIC` `instructions`/`systemPrompt` (Rule 7) — never restrict the search to structural nodes only, even if a person tells you to skip *designing fixes* for AI nodes; detection is always in scope.
+Do NOT rely on `jelou graph` for this (see Phase 3 note). Pull every workflow JSON already on disk from Phase 2, **excluding any workflow Phase 3 flagged as having nothing connected to its `START`**, and search the rest directly, across **every** node type including `AI_TASK`/`AI_LOGIC` `instructions`/`systemPrompt` (Rule 7) — never restrict the search to structural nodes only, even if a person tells you to skip *designing fixes* for AI nodes; detection is always in scope.
 
 Patterns to search for (see `references/patterns.md` for the exact regex list and why each one matters):
 - `{{$user.id}}` / `$user.id` in template fields (CONDITIONAL terms, DATUM queries/rows, HTTP bodies/URLs, MEMORY variables, CHANNEL_MESSAGE text used as a payload).
@@ -103,7 +104,7 @@ Phase 5/6 above only sees what the *calling workflow* passes into a tool — not
 ## Phase 7 — Existing-guard / broken-attempt detection
 
 Before designing anything, check whether this company already has:
-- A workflow whose name/purpose looks like a phone-resolution guard (title containing "telefono"/"contacto"/"phone", a `CONDITIONAL` on `$user.phone` feeding a `contact_info_request` or `INPUT`). If found, note its `skillId` and reuse/extend it in Phase 9 instead of building a duplicate.
+- A workflow titled exactly `Guardia Teléfono` (the standard name, Phase 9) — check this first, it's the fast path. If absent, fall back to a looser match: any workflow whose name/purpose looks like a phone-resolution guard (title containing "telefono"/"contacto"/"phone", a `CONDITIONAL` on `$user.phone` feeding a `contact_info_request` or `INPUT`). Either way, if found, note its `skillId` and reuse/extend it in Phase 9 instead of building a duplicate.
 - A broken hand-rolled attempt (the `$user.get("phone") || $user.get("id")` pattern, or any other defensive-looking code that would in fact always fail per `references/patterns.md`). Report it as a live bug, distinct from "nothing done yet."
 
 ## Phase 8 — Runtime verification (automatic, always cleaned up)
@@ -120,12 +121,18 @@ Do this for real evidence, not assumption — but every step here writes to the 
 
 Using the Phase 4 bucket:
 
-- **No real AI routing** (single default, or legacy menu behind one root): the guard goes exactly once, at the true entry — right after that workflow's `START`, before anything else runs.
-- **Real AI routing**: the guard goes at every workflow that both (a) has a `migrate`-classified `user.id` finding and (b) was confirmed reachable as a first message in Phase 4. Don't add it to workflows with no phone-dependent logic just for symmetry.
+- **No real AI routing** (single default, or legacy menu behind one root): wire the guard exactly once, at the true entry — a `SKILL` node calling the guard workflow, placed right after that workflow's `START`, before anything else runs.
+- **Real AI routing**: wire the guard at every workflow that both (a) has a `migrate`-classified `user.id` finding and (b) was confirmed reachable as a first message in Phase 4. Don't add it to workflows with no phone-dependent logic just for symmetry.
+
+### The guard is always its own workflow — never inline it into the caller
+
+**Never create the guard's `START`/`CONDITIONAL`/`CHANNEL_MESSAGE` (or `INPUT`)/`END` nodes directly inside the entry or target workflow.** The guard is always a separate, standalone, `SKILL`-callable workflow with its own `START` and its own `END` declaring the single `resuelto` output (the canonical shape below describes *that* workflow's internals). Every workflow that needs the guard gets exactly one `SKILL` node, wired right after its own `START`, calling the guard workflow — the caller's own `START` is never touched beyond adding that one `SKILL` node and routing its `resuelto` output onward. Confirmed live mistake (Company G): the guard's nodes were built directly inside the `inicio` workflow instead of as their own workflow. This pollutes the entry workflow's graph, breaks reuse across the multiple entry points a real-AI-routing bucket needs (each one would otherwise need its own copy instead of one shared `SKILL` call), and means Phase 7's existing-guard detection in a future run can't find/extend it cleanly. Always create the guard as its own workflow first (`jelou workflow create`), get it pushed and validated on its own, then wire callers to it via `SKILL` nodes.
 
 ### The canonical shape — always this, never more
 
 The guard is always exactly this shape, regardless of company. **Never add a second declared output, never add a branch that escalates to a human/advisor/PMA workflow, and never add any node beyond what's listed below** — even if the company already has an advisor-handoff workflow sitting right there and it would be "easy" to wire a failure path into it. One run (Company F) drifted into adding a PMA-escalation output that was never asked for; treat that as the specific mistake to not repeat. If a real gap ever seems to call for more than this shape, stop and ask the person instead of improvising it into the design.
+
+**Standard workflow name: `Guardia Teléfono`.** When minting a new guard (no match found in Phase 7), always create the workflow with this exact title — never a company-specific variant. This makes Phase 7's existing-guard detection in every future run on this project a direct name match instead of a fuzzy title guess. If Phase 7 finds an existing guard under a different title (a pre-`Company G` migration, or a company's own hand-rolled attempt), reuse/extend its `skillId` as before (don't rename a live workflow just to match), but note the title mismatch in the report.
 
 Exactly **one** declared output on the guard skill (name it `resuelto`, display "Telefono Resuelto" or equivalent) — never a second `no_resuelto`/`failed` output.
 
@@ -151,7 +158,7 @@ Build a single self-contained HTML artifact (load the `artifact-design` skill be
 
 1. **Header**: company name, project name, as-of date, and status badges (provider, routing-model bucket).
 2. **Summary tiles**: counts — files audited, nodes to migrate, do-not-touch, ambiguous, tools/APIs reviewed.
-3. **Architecture**: one short paragraph + the routing-model evidence (the actual `jelou workflow evaluate` results, not just the conclusion).
+3. **Architecture**: one short paragraph + the routing-model evidence (the actual `jelou workflow evaluate` results, not just the conclusion), plus the list of workflows Phase 3 excluded for having nothing connected to their `START` (name + id, or "none" if all were live).
 4. **Findings table**: one row per hit, columns for workflow, node, classification (color-coded: migrate/do-not-touch/ambiguous), and a one-line reason.
 5. **Tools & APIs**: the Phase 6 priority list (High/Medium/Low) with the real destination named. State the true tool count from Phase 6.5 (e.g. "20 tools revisadas: 12 en nodos TOOL, 8 conectadas a agentes IA"), not just standalone-node instances.
 5b. **Tools con lógica interna afectada** (only when Phase 6.5 found `tool-internal` hits): one entry per affected tool — its name/id, its own workflow, what's wrong inside it, and the full list of callers across the project (file + node, both `TOOL` nodes and `AI_TASK` connections). Make clear in the copy that fixing this is a separate step gated on its own authorization (Phase 12.5), not part of the main plan.
@@ -174,7 +181,7 @@ Do not proceed to Phase 12 without one of these being explicit and current (a st
 
 ## Phase 12 — Apply (only after explicit approval)
 
-Execute Phase 9's plan file by file: create/extend the guard skill, wire it at the determined entry points, migrate every `migrate`-classified hit (never `ambiguous` ones — those stay as reported warnings unless the person addressed them explicitly in their approval). For every `jelou push`:
+Execute Phase 9's plan file by file: create/extend the guard **as its own standalone workflow** (never as nodes inserted into the entry/target workflow itself — see Phase 9), wire it at the determined entry points via a `SKILL` node placed right after each target workflow's own `START`, migrate every `migrate`-classified hit (never `ambiguous` ones — those stay as reported warnings unless the person addressed them explicitly in their approval). For a `migrate`-classified hit inside a CODE node calling `$user.get("id")`, replace it directly with `$user.get("phone")` — this works as a straight literal swap, with no `MEMORY`/`$memory.get()` workaround and no dedicated runtime probe needed (see `references/patterns.md`, Company G). For every `jelou push`:
 - Resolve `LOCKFILE_DRIFT` via `jelou incoming diff` first, then `accept-local` only after confirming the diff shows your own intended changes and nothing you'd be clobbering.
 - Fix pre-existing push-blocking gates you encounter along the way (short `workflowDescription`, ambiguous/unqualified AI model names) using the same conventions as the rest of the file you're already touching — but don't go hunting for unrelated ones in files you have no other reason to touch.
 - When a pre-existing gate needs a **destructive** fix to clear (deleting a node, not just editing a description or a model string), never do it silently even if you're confident it's safe (e.g. confirmed unreachable via `jelou graph`/no incoming edges). Stop and ask first, the way it played out in Company E (`TwLJK2I1B9Fq0x2JtAFni`, an orphaned WhatsApp Flow node blocking `inicio`'s push) — that back-and-forth is the intended behavior, not friction to engineer around.
