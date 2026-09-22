@@ -2,6 +2,12 @@
 
 Every rule here was confirmed empirically (via `jelou test` traces or `jelou workflow validate`), not inferred. Company names in parentheses are where it was first confirmed; treat the pattern as platform-wide unless noted otherwise.
 
+## This is a WhatsApp-only concern — scope every audit to `.whatsapp.json`
+
+`$user.phone`, `contact_info_request`, and the whole BSUID-unresolved-identity problem this skill exists to fix are specific to how WhatsApp identifies a contact. A Web session has no phone number at all (its `$user.id` is a browser/session identifier); a Facebook conversation's `$user.id` is a page-scoped PSID; Instagram's is an IGSID — neither channel has a `phone` concept for `$user` to resolve, and `contact_info_request` isn't even a valid message type off WhatsApp (per `jelou workflow node-spec CHANNEL_MESSAGE`'s channel-availability matrix: WEB/FACEBOOK/INSTAGRAM/TWITTER each have their own distinct palette of message types, and none of them include it). Auditing a non-WhatsApp workflow for `user.id`-as-phone misuse is a category error — there's no "correct" value to migrate to.
+
+**Mechanical rule:** every pulled workflow file is named `<slug>.<channel>.json`. Treat anything other than `.whatsapp.json` as out of scope from Phase 3 onward, and a company with no `.whatsapp.json` files at all as one this skill has nothing to offer — say so and stop rather than producing a report with zero real findings that reads as "all clear." A company with WhatsApp plus other channels is the common case, not an edge case: scope down to WhatsApp, don't treat the other channels as an error condition.
+
 ## Search patterns for Phase 5
 
 Run these across every pulled workflow JSON file, on the raw text (not just parsed node configs), so you also catch matches inside `AI_TASK`/`AI_LOGIC` `instructions`/`systemPrompt` strings:
@@ -15,16 +21,15 @@ user\.get\(\\?"phone\\?"\)
 
 Note the JSON-escaping: a pulled workflow file has literal `\"` inside string values, so `$user.get("phone")` appears in the raw bytes as `$user.get(\"phone\")`. Grep for both the escaped and unescaped forms, or normalize by loading the JSON and re-serializing before searching node-by-node.
 
-## `$user.get("phone")` inside CODE nodes — direct swap for an existing `$user.get("id")` call works (corrected, Company G)
+## `$user.get("phone")` in CODE nodes works on real WhatsApp — the synthetic tester just can't confirm it
 
-Earlier evidence (Company A, `gupshup_capi`; Company B, `gupshup` classic) recorded `$user.get("phone")` throwing `Error: Key phone not found.` inside a `CODE` node's JS sandbox, and prescribed a `MEMORY` + `$memory.get()` workaround plus a fresh runtime probe per company to re-confirm it.
+**Root cause found (2026-09-21/22, confirmed across multiple real companies over real WhatsApp):** `$user.get("phone")` works fine inside a `CODE` node — a direct swap of an existing `$user.get("id")` call for `$user.get("phone")` is safe and is now the standing migration move. There is no meaningful difference between "replacing an existing call" and "writing it from scratch" — the sandbox executes whatever text is in `content` regardless of how it got there; a distinction between those two never made sense and earlier phrasing here was wrong to imply one.
 
-**Correction (Company G):** when a CODE node already calls `$user.get("id")` and that hit is classified `migrate`, replace the literal call with `$user.get("phone")` directly — it works. No `MEMORY`/`$memory.get()` indirection is needed, and no dedicated Phase 8-style runtime probe is needed to re-verify this specific swap; treat it as the standing migration move for this shape.
+**Why the earlier evidence looked so solid and was still wrong:** every prior confirmation of `$user.get("phone")` throwing `Error: Key phone not found.` (Company A, Company B, and the Phase 8 probes run since) was captured through `jelou test` — the **synthetic tester**, never a real WhatsApp conversation. The synthetic tester's `$user` object does not carry a `phone` key **at all**, because a synthetic test user is not a real, phone-resolved WhatsApp contact — it's not that the value is empty, the key is structurally absent for that harness. So `$user.get("phone")` throwing there is a property of the *test tool*, not of the platform: it will throw on every synthetic-tester probe, for every company, forever, regardless of whether real customers would ever hit that line. Treating that as a platform limitation was a reasonable-looking but incorrect inference from a tool that wasn't built to represent this particular field.
 
-If you ever hit a CODE node calling `$user.get("phone")` from scratch (not replacing an existing `$user.get("id")` call) and it throws `Error: Key phone not found.`, fall back to the old workaround:
-1. A `MEMORY` node first, with a template field: `"variables": {"some_key": "{{$user.phone}}"}` — this form works fine, safely resolves to `""` when the contact has no phone (confirmed via `jelou test trace`), never throws.
-2. Read it back inside CODE via `$memory.get("some_key")`.
-3. To persist a result for downstream nodes from CODE, use `$memory.set("your_key", value)` — never `$output.set(...)`.
+**Standing rule going forward: never use `jelou test` (the synthetic tester) to verify anything about `$user.get("phone")` or the presence of the `phone` key on `$user` in a CODE node.** A "throws" result from that specific probe is expected and uninformative — it proves nothing about real customers. If Phase 8's automatic verification needs evidence for a phone-migration change, keep it scoped to what the synthetic tester *can* represent correctly: the **template** form `{{$user.phone}}` (a `MEMORY` node with `"variables": {"some_key": "{{$user.phone}}"}`) does safely resolve to `""` on the synthetic tester with no throw, and that read *is* representative — a template reference behaves the same for a real unresolved contact and for the synthetic one, since both simply lack a phone value; it's only the CODE-sandbox `.get("phone")` accessor whose behavior diverges between the two. When a company's real behavior needs confirming beyond that, it takes an actual WhatsApp conversation (live channel), not `jelou test` — flag that distinction in the report rather than asserting confidence the tool can't back up.
+
+To get the resolved phone into a CODE node when there's no existing `$user.get("id")` call to swap (e.g. building new logic, not migrating an old line): just call `$user.get("phone")` directly — it works. The old `MEMORY` + `$memory.get()` workaround documented in earlier versions of this file is no longer necessary for this specific case; keep it in mind only as a generic pattern for bridging a template-only value into CODE, not as a required workaround for `phone`.
 
 ## `$output.set(...)` is invalid in a plain CODE node
 
@@ -38,7 +43,9 @@ Found live in 4 CODE nodes in Company C (all named things like "Gate: teléfono"
 try { telefono = String($user.get("phone") || $user.get("id") || ""); } catch (e) { telefono = ""; }
 ```
 
-This looks like a safe fallback chain but isn't one: in JS, if the first operand of `||` throws, the exception propagates immediately — `$user.get("id")` is never evaluated. Since `$user.get("phone")` always throws (see above), `telefono` always ends up `""` (or whatever the catch branch defaults to), **never** the id. Treat this exact shape as a confirmed live bug whenever you find it, not a working safeguard — and check whether any node depending on it (in Company C, one hard-`throw`s "No hay teléfono de usuario" when the value is empty) is silently blocking a whole flow.
+In JS, if the first operand of `||` throws, the exception propagates immediately — `$user.get("id")` is never evaluated, so if `$user.get("phone")` throws, `telefono` always ends up `""` (or whatever the catch branch defaults to), never the id.
+
+**This finding needs re-verification before being treated as a confirmed bug, in light of the correction above.** It was originally diagnosed by reasoning from the (incorrect) belief that `$user.get("phone")` always throws for every conversation — that belief came from synthetic-tester evidence only (see above), and it's now established that `$user.get("phone")` works on real WhatsApp. If it also doesn't throw for a real BSUID-unresolved contact on real WhatsApp (returning a falsy value instead), this exact pattern would actually fall through to `$user.get("id")` as originally intended, and would **not** be a bug at all. Don't re-assert this as a confirmed live bug purely from reading the code anymore — it needs an actual real-WhatsApp check (or the company's own runtime logs) before being reported as broken, not just the JS-semantics argument alone. If you find this shape again, report it as "needs verification" rather than "confirmed bug" unless you have real-conversation evidence either way.
 
 ## `contact_info_request` ("Solicitar contacto") is provider-gated
 
@@ -64,6 +71,23 @@ Confirmed live mistake, Company G: when applying the fix, the guard's `START`/`C
 - A future Phase 7 existing-guard detection pass looks for a distinct workflow with guard-shaped nodes; nodes buried inside an unrelated entry workflow are much harder to recognize and reuse.
 
 **Standing rule:** the guard is always authored as its own standalone, `SKILL`-callable workflow (its own `START`, ending in an `END` that selects the single `resuelto` output). Every caller — the true entry in the no-real-routing bucket, or each matching workflow in the real-AI-routing bucket — gets exactly one `SKILL` node wired right after its own `START` that calls the guard workflow, never the guard's raw nodes copy-pasted or hand-built in place.
+
+## Being its own workflow isn't enough — the guard also needs a real declared output
+
+Per `jelou workflow node-spec SKILL`: a `SKILL` node calling another workflow has two modes decided purely by whether the caller wires any `output:<id>:*` edge. With none, it's "legacy handoff" — the child starts and the caller keeps going immediately on `default`, without waiting for anything. Only wiring at least one `output:<id>:*` edge makes the caller park and resume when the child's `END` node selects that output. So a guard workflow that has its own `START`/`CONDITIONAL`/`contact_info_request`/`END` nodes but **never declared an output** (`jelou workflow skill <skillId> --agent` → `"outputs": []`) is only usable in the useless mode — every caller wired to it would fire it and immediately continue without the phone ever being resolved, silently defeating the whole guard.
+
+`jelou workflow skill <skillId> --agent` is the check: it returns `outputs[]` as `[{ id, name, display_name, type, position }]` (`type` is `SUCCESS` / `FAILED` / `DEFAULT` — the caller's branch token is `output:<id>:<type lowercased>`). Real example, Company A's original guard (skillId 50330, before the single-output shape was standardized):
+
+```json
+"outputs": [
+  {"id": "_Lnf9nS-00-DMbtt1jkYs", "name": "no_resuelto", "display_name": "Telefono no resuelto", "type": "FAILED"},
+  {"id": "1M5osuMVsbCFWpbeI0BmY", "name": "resuelto", "display_name": "Telefono resuelto", "type": "SUCCESS"}
+]
+```
+
+**Only the `SUCCESS` output matters — this skill never designs around, wires against, or maintains any other output a guard happens to have.** `contact_info_request` has exactly one real way out once `expire` is left unwired (see above): `default`. One way out means one output, full stop — Company A's leftover `no_resuelto`/`FAILED` above is unused legacy metadata to leave alone, not something to reconcile or wire a caller's second edge to.
+
+Two consequences: (1) if Phase 7 finds an existing guard with no `SUCCESS` entry in `outputs[]` (empty, or only non-`SUCCESS` ones), adding it (`jelou workflow output add <skillId> --name resuelto --type SUCCESS ...`) plus an `END` node that selects it is a required fix before the guard can be safely reused, not optional polish; (2) when wiring any caller — new or existing guard — always read the real `SUCCESS` output's `id` from this command and use `output:<that id>:success` verbatim. Hardcoding the canonical shape's assumed id against a guard that actually uses a different one produces a `SKILL` node that looks correctly wired in the JSON but never resumes — no validator error, no runtime error, it just parks forever.
 
 ## Distinguishing "platform-identity field" from "business phone field"
 
