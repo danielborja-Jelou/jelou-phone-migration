@@ -8,18 +8,71 @@ Every rule here was confirmed empirically (via `jelou test` traces or `jelou wor
 
 **Mechanical rule:** every pulled workflow file is named `<slug>.<channel>.json`. Treat anything other than `.whatsapp.json` as out of scope from Phase 3 onward, and a company with no `.whatsapp.json` files at all as one this skill has nothing to offer — say so and stop rather than producing a report with zero real findings that reads as "all clear." A company with WhatsApp plus other channels is the common case, not an edge case: scope down to WhatsApp, don't treat the other channels as an error condition.
 
-## Search patterns for Phase 5
+## What `jelou graph search --text` actually does (verified 2026-09-24)
 
-Run these across every pulled workflow JSON file, on the raw text (not just parsed node configs), so you also catch matches inside `AI_TASK`/`AI_LOGIC` `instructions`/`systemPrompt` strings:
+Tested directly against a real linked project (not just read from `--help`), since the earlier belief that "`jelou-graph` can't find text at all" turned out to be true only for the `references`/`summary`/`focus`/`paths`/`impact` subcommands, never checked against `search --text`.
+
+Confirmed behavior:
+- **It's a literal substring match against the node's *parsed* configuration value, not the raw JSON file bytes.** Searching `$memory.getJson('canva_create_result'` — quotes, parens and all — matched correctly with zero manual escaping. This means you do **not** need to worry about JSON-escaped quotes (`\"`) the way a raw grep over the file bytes would — but it also means quote style matters: a company's CODE node written with single quotes (`$user.get('id')`) will not match a search for the double-quote form. Run both.
+- **It reaches inside prompt text and template terms, not just titles.** Verified directly: a phrase that only appeared deep inside an `AI_TASK`'s `instructions` field (not in its title) was found; so was a `CONDITIONAL` term's `value1`. Confirmed across `CODE`, `AI_TASK`, `CONDITIONAL` — the exact node types this migration cares about most.
+- **It self-reports truncation, reliably.** The response has `count` (returned), `matched` (real total), and a `truncated` boolean. `--limit 1` against a term with 4 real hits returned `count: 1, matched: 4, truncated: true` — so you can always tell, and always know exactly how high to raise `--limit` (at least `matched`), instead of guessing.
+- **It re-verifies freshness against local file hashes on every call** (`freshness.strategy: "enumerate_sha256_and_recheck"`) — it is not reading a stale server-side cache from some earlier point in time; it's checking the same locally pulled files a manual grep would read. The one thing it does *not* check is whether the *remote* draft has changed since your last `jelou pull` (`freshness.remote: "not_checked"`) — same caveat that already applies to reading local files directly, not a new risk.
+- **Its scope is exactly the locally pulled graph — no further, no less.** It found hits fine across the project's own workflow files, but it has no visibility into a tool's separate backing workflow (`availability: referenced`, never `local`) — confirming Phase 6.5's separate pull-and-search of tool workflows is still required, not something this command can shortcut.
+
+**How to use it for Phase 5:**
 
 ```
-user\.id
-user\.get\(\\?"id\\?"\)
-user\.get\(\\?"phone\\?"\)
-\$user\.phone
+jelou graph search --text '<literal>' --limit 500 --agent
 ```
 
-Note the JSON-escaping: a pulled workflow file has literal `\"` inside string values, so `$user.get("phone")` appears in the raw bytes as `$user.get(\"phone\")`. Grep for both the escaped and unescaped forms, or normalize by loading the JSON and re-serializing before searching node-by-node.
+Run one call per literal below — this is exact-string matching, not regex, so both quote styles are separate searches:
+
+```
+$user.id
+user.get("id")
+user.get('id')
+user.get("phone")
+user.get('phone')
+$user.phone
+$user.phoneNumber
+user.get("referenceId")
+user.get('referenceId')
+$user.referenceId
+referenceId
+userReferenceId
+```
+
+For every call: check `truncated`, re-run with a higher `--limit` if needed, and for every returned node open its `source` file to read the full config before classifying — the search result gives you id/label/type/reachability, never the matching text in context.
+
+**If this ever looks unreliable for a given company** (implausibly low counts vs. Phase 3's node totals, or a company using an unusual file/encoding setup), fall back to reading the raw pulled JSON directly and searching it yourself — the goal is complete coverage, not loyalty to one method.
+
+## `$user.phoneNumber` is a documented alias of `$user.phone`
+
+Per Jelou's own docs (`guides/variables/user`): `{{$user.phoneNumber}}` returns exactly the same value as `{{$user.phone}}`, kept only for older flows that already used it. Treat every hit the same as a `$user.phone` hit — informational, already-correct, no migration needed, and count it toward the same "how many prompts already reference the phone" signal used in Phase 5/9.
+
+## `referenceId` is a Jelou API field name, not a `$user` property
+
+The workflow-scoped `$user` object documented by Jelou exposes exactly four properties: `id`, `names`, `phone`, `phoneNumber`. There is no `$user.referenceId` and no `$user.get("referenceId")` — if either literally appears in a workflow, it's dead/broken code (the accessor doesn't resolve to anything meaningful), not a hidden equivalent of `$user.get("id")`. Don't classify it as `migrate`/`do-not-touch`; flag it as broken code needing a human look.
+
+Where `referenceId` (and its API-response sibling `userReferenceId`) genuinely matters is as a **field name inside request bodies sent to Jelou's own APIs**, confirmed in two places:
+- Custom Channel "enviar interacción" (`POST .../enviar-interaccion`): body field `referenceId`, documented as "identificador estable del usuario en tu sistema... se usa como `userId` en las entregas salientes."
+- Memoria API "obtener-registro"/"obtener-registros": body field `userReferenceId`, "identificador de referencia externo del usuario."
+
+Both are Jelou's own platform-session-identity fields, sent under a different name because they're API-layer fields, not workflow-template fields — treat them like the `/users/{{$user.id}}/...` platform-identity pattern and classify as `do-not-touch`, fed from `$user.get('id')`/`{{$user.id}}`. **Caveat on the Custom Channel one specifically:** its docs describe `referenceId` as "identificador estable del usuario en tu sistema" without mentioning BSUID at all (unlike the endpoints in the next section, which explicitly document BSUID support) — Custom Channel is for building a company's own non-WhatsApp channel integration, so this may just be whatever external id scheme that company invented, unrelated to the WhatsApp BSUID problem this skill targets. Only classify a Custom Channel `referenceId` hit as `do-not-touch` when the node is clearly still on the WhatsApp path; if it's genuinely a separate custom channel, it's out of scope per Rule 12, not a finding either way. The Memoria API's `userReferenceId` has no such ambiguity — it's Jelou's own memory store, keyed the same way regardless of channel. If you find either field already fed by `$user.phone` instead of `$user.id`, that is a live bug (breaks for BSUID-unresolved contacts, the exact failure mode this whole migration exists to fix), not a correct migration — call it out explicitly, don't quietly approve it as `do-not-touch`.
+
+## Where `$user.id` (BSUID-or-phone) is the *correct* value, not a bug to migrate
+
+Jelou documents several of its own outbound-messaging surfaces as accepting **phone or BSUID interchangeably** for the recipient/destination field — confirmed directly in the docs (`docs.jelou.ai`), not inferred:
+- `POST /v1/bots/{botId}/messages` — field `userId` (every message-type variant: texto, imagen, video, audio, sticker, ubicación, carrusel, contacto, archivo, botón de llamada/url, respuestas rápidas, solicitud de contacto/ubicación, texto con opciones — they're all the same endpoint/field, just a different `type`).
+- `POST /v2/whatsapp/{botId}/hsm` — field `destinations[]`.
+- Campaign sends, individual and bulk (`envio-individual`, `envio-masivo`) — the `destinations` field / the CSV's first identifier column.
+- The workflow's own `HSM` node — its recipient field accepts a dynamic variable that resolves to either a phone number or a BSUID and sends correctly either way. Its own guide gives the example of a variable holding a BSUID (e.g. captured from an inbound webhook) working fine there.
+
+**Meaning for the migration:** for a field whose only job is "who receives this outbound WhatsApp message," `$user.id`/`{{$user.id}}` is not just safe, it's arguably the *more* robust choice than `$user.phone` — `$user.id` is never empty, while `$user.phone` can be, for exactly the BSUID-unresolved contacts this whole migration is about. Don't flag `$user.id` as a migrate target in a pure recipient/destination field; classify it `do-not-touch` and say so plainly, so nobody "fixes" a working send into a potentially-empty one.
+
+**One documented exception — AUTHENTICATION (OTP) templates.** Per Jelou's docs: "Para el envío de plantillas de categoría AUTHENTICATION (OTP) no se puede utilizar BSUID; ese destinatario debe enviarse como número de teléfono." A BSUID destination on an OTP send is **silently skipped** for that specific recipient — no error, the rest of a batch send continues normally, that one contact just never gets the code. If you find `$user.id`/`{{$user.id}}` feeding the destination of an OTP/AUTHENTICATION-category HSM send, don't classify it `do-not-touch` — it's a real, silent delivery failure waiting to happen for BSUID-identified users. Report it as its own warning: this is exactly the kind of case where wiring the send to fire *after* the guard resolves `$user.phone` (Phase 9) is the fix, since a resolved phone works for OTP sends where a BSUID would silently fail.
+
+A read-only field like `campanas/notificaciones`'s `destination` (shows phone or BSUID "según cómo se haya enviado el mensaje") is just informational when reading webhook/notification payloads — not something a company authors, so not an audit finding either way.
 
 ## `$user.get("phone")` in CODE nodes works on real WhatsApp — the synthetic tester just can't confirm it
 
